@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Olah Data Tiltmeter</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    canvas { max-width: 100%; height: 300px; }
+    .chart-container {
+      background: #fff; padding: 20px;
+      border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      margin-bottom: 30px;
+    }
+    #info { margin: 10px 0; font-weight: bold; color: #007bff; }
+    #captureArea h3 {
+      text-align: center; font-size: 24px; margin-bottom: 30px;
+    }
+    #summary {
+      background: #f8f9fa; padding: 20px;
+      border-radius: 8px; margin-top: 30px;
+    }
+    .no-download {
+      display: block;
+    }
+    .capturing .no-download {
+      display: none !important;
+    }
+    #cr-fadlan {
+      position: fixed;
+      bottom: 6px;
+      right: 10px;
+      font-size: 11px;
+      color: rgba(0, 0, 0, 0.2);
+      pointer-events: none;
+      user-select: none;
+      z-index: 9999;
+    }
+  </style>
+</head>
+<body>
+  <h2>📈 Olah Data Tiltmeter Gunung Api</h2>
+  <input type="file" id="fileInput" accept=".xlsx,.xls" />
+  <br><br>
+  Nama Gunung: <input type="text" id="namaGunung" placeholder="Contoh: Inerie" />
+  <br><br>
+  Filter Tanggal: 
+  <input type="date" id="startDate"> s.d. 
+  <input type="date" id="endDate">
+  <br><br>
+  <button onclick="applyFilter()">Tampilkan Data</button>
+  <br><br>
+  <div id="info">Silakan unggah data Excel Tiltmeter (.xlsx)</div>
+
+  <div id="captureArea">
+    <h3 id="judulChart"></h3>
+
+    <div class="chart-container"><canvas id="chartX"></canvas></div>
+    <div class="chart-container"><canvas id="chartY"></canvas></div>
+    <div class="chart-container"><canvas id="chartTemp"></canvas></div>
+
+    <div id="summary" class="no-download"></div>
+  </div>
+
+  <button onclick="downloadAllCharts()">🔽 Download Grafik</button>
+
+  <script>
+    let rawData = [];
+    let charts = {};
+    let keyMap = {};
+
+    function normalizeKey(str) {
+      return (str || "").toString().toLowerCase().replace(/\s+/g, "");
+    }
+
+    function detectKeys(row) {
+      const keys = Object.keys(row).reduce((acc, key) => {
+        const n = normalizeKey(key);
+        if (n.includes("date")) acc.date = key;
+        if (n.includes("sumbux")) acc.x = key;
+        if (n.includes("sumbuy")) acc.y = key;
+        if (n.includes("temp")) acc.temp = key;
+        return acc;
+      }, {});
+      return keys;
+    }
+
+    function parseNum(val) {
+      return parseFloat((val || "").toString().replace(",", "."));
+    }
+
+    function parseDateSafe(dateStr) {
+      if (!dateStr) return null;
+      if (typeof dateStr === "object" && dateStr instanceof Date) return dateStr;
+      const [datePart, timePart] = dateStr.split(" ");
+      const [day, month, year] = datePart.split("/").map(Number);
+      const [hour = 0, minute = 0, second = 0] = (timePart || "00:00:00").split(":").map(Number);
+      return new Date(year, month - 1, day, hour, minute, second);
+    }
+
+    document.getElementById('fileInput').addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      document.getElementById("info").innerText = "⏳ Memproses data...";
+      const reader = new FileReader();
+      reader.onload = function (e) {
+        const data = new Uint8Array(e.target.result);
+        const workbook = XLSX.read(data, { type: "array" });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const json = XLSX.utils.sheet_to_json(sheet, { raw: false });
+        rawData = json;
+        keyMap = detectKeys(rawData[0] || {});
+        applyFilter();
+      };
+      reader.readAsArrayBuffer(file);
+    });
+
+    function formatDateOnly(dateObj) {
+      const d = new Date(dateObj.getTime());
+      d.setHours(0, 0, 0, 0);
+      return d.toISOString().split('T')[0];
+    }
+
+    function applyFilter() {
+      const startInput = document.getElementById('startDate').value;
+      const endInput = document.getElementById('endDate').value;
+      if (!startInput || !endInput) return;
+
+      const start = new Date(startInput + "T00:00:00");
+      const end = new Date(endInput + "T23:59:59");
+
+      const fullDates = [];
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        fullDates.push(formatDateOnly(new Date(d)));
+      }
+
+      const parsedData = (rawData || []).map(row => {
+        const t = parseDateSafe(row[keyMap.date]);
+        return {
+          time: t,
+          dateOnly: t ? formatDateOnly(t) : null,
+          x: parseNum(row[keyMap.x]),
+          y: parseNum(row[keyMap.y]),
+          temp: parseNum(row[keyMap.temp])
+        };
+      }).filter(r => r.time && r.dateOnly);
+
+      const mapped = Object.fromEntries(parsedData.map(r => [r.dateOnly, r]));
+      const finalData = fullDates.map(date => mapped[date] || { dateOnly: date, x: null, y: null, temp: null });
+
+      processData(finalData, start, end);
+    }
+
+    function processData(data, start, end) {
+      document.getElementById("info").innerText = `✅ Data ditampilkan untuk periode: ${formatDateOnly(start)} hingga ${formatDateOnly(end)}`;
+      const labels = data.map(r => r.dateOnly);
+      const xVals = data.map(r => r.x);
+      const yVals = data.map(r => r.y);
+      const tempVals = data.map(r => r.temp);
+
+      const totalPoints = labels.length;
+      const maxLabels = 60;
+      const globalStepSize = Math.max(1, Math.floor(totalPoints / maxLabels));
+
+      const namaGunung = document.getElementById("namaGunung").value || "[Nama Gunung]";
+      const periode = `${formatDateOnly(start)} - ${formatDateOnly(end)}`;
+      document.getElementById("judulChart").innerText = `Grafik Tiltmeter Gunung ${namaGunung} Periode ${periode}`;
+
+      createChart("chartX", labels, xVals, "Tangensial", 'black', "µrad", globalStepSize);
+      createChart("chartY", labels, yVals, "Radial", 'black', "µrad", globalStepSize);
+      createChart("chartTemp", labels, tempVals, "Temperatur", 'black', "°C", globalStepSize);
+
+      const dataFilled = data.filter(d => d.x !== null && d.y !== null);
+      analyzeTrends(dataFilled);
+    }
+
+    function createChart(id, labels, data, label, color, yUnit, stepSize) {
+      const ctx = document.getElementById(id).getContext("2d");
+      if (charts[id]) charts[id].destroy();
+
+      const isChartTemp = id === "chartTemp";
+
+      charts[id] = new Chart(ctx, {
+        type: "line",
+        data: {
+          labels: labels,
+          datasets: [{
+            label: label,
+            data: data,
+            borderColor: color,
+            borderWidth: 2,
+            pointRadius: 1,
+            spanGaps: true,
+            fill: false,
+            tension: 0.1
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: {
+              ticks: {
+                display: true,
+                color: (id === "chartX" || id === "chartY") ? "rgba(0,0,0,0)" : "#666",
+                callback: function(value, index) {
+                  return index % stepSize === 0 ? this.getLabelForValue(value) : "";
+                },
+                maxRotation: 90,
+                minRotation: 90
+              },
+              grid: {
+                display: true,
+                drawTicks: true
+              }
+            },
+            y: {
+              title: {
+                display: true,
+                text: yUnit
+              }
+            }
+          },
+          plugins: {
+            legend: {
+              display: isChartTemp
+            },
+            title: {
+              display: true,
+              text: label,
+              font: {
+                size: 18,
+                weight: 'bold'
+              },
+              padding: {
+                top: 10,
+                bottom: 10
+              }
+            }
+          }
+        }
+      });
+    }
+
+    function analyzeTrends(data) {
+      const clean = data.filter((d, i, a) => i === 0 || (Math.abs(d.x - a[i - 1].x) < 50 && Math.abs(d.y - a[i - 1].y) < 50));
+      if (clean.length < 2) {
+        document.getElementById("summary").innerHTML = "<p><strong>⚠️ Data terlalu sedikit untuk analisa tren.</strong></p>";
+        return;
+      }
+      const dx = clean.at(-1).x - clean[0].x;
+      const dy = clean.at(-1).y - clean[0].y;
+      const sX = dx > 2 ? "naik" : dx < -2 ? "turun" : "stabil";
+      const sY = dy > 2 ? "naik" : dy < -2 ? "turun" : "stabil";
+      const kesimpulan = sX === "naik" && sY === "naik" ? "📈 Terjadi INFLASI permukaan secara radial." :
+                          sX === "turun" && sY === "turun" ? "📉 Terjadi DEFLASI permukaan secara radial." :
+                          "⚠️ Tidak ditemukan tren perubahan yang konsisten pada kedua sumbu.";
+      document.getElementById("summary").innerHTML = `
+        <h3>📊 Kesimpulan Otomatis</h3>
+        <p><strong>Perubahan Sumbu:</strong><br>
+        - Sumbu X: ${dx.toFixed(2)} µrad (${sX})<br>
+        - Sumbu Y: ${dy.toFixed(2)} µrad (${sY})</p>
+        <p><strong>Interpretasi:</strong><br>${kesimpulan}</p>
+        <p><strong>Catatan Teknis:</strong><br>
+        Data telah difilter untuk menghilangkan lonjakan (spike) >50 µrad antar titik berturut-turut.</p>
+      `;
+    }
+
+    function downloadAllCharts() {
+      document.body.classList.add("capturing");
+      html2canvas(document.getElementById("captureArea")).then(canvas => {
+        document.body.classList.remove("capturing");
+        const link = document.createElement("a");
+        link.download = "grafik-tiltmeter.png";
+        link.href = canvas.toDataURL();
+        link.click();
+      });
+    }
+  </script>
+
+  <div id="cr-fadlan">© 2025 Fadlan Djamil – AkuData Observatory</div>
+</body>
+</html>

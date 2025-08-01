@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Grafik Kegempaan Gunung Api</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #fff; }
+    h2 { text-align: center; font-size: 26px; font-weight: bold; margin: 5px 0; }
+    .controls { margin-bottom: 20px; font-size: 16px; }
+    canvas { background: #fff; }
+    #captureArea { background: #fff; padding: 20px; }
+    .chart-block { margin-bottom: 40px; }
+    input, button { font-size: 16px; padding: 5px 8px; }
+    #cr9x7 { position: fixed; bottom: 5px; right: 10px; font-size: 11px; color: rgba(0,0,0,0.2); pointer-events: none; user-select: none; z-index: 9999; }
+  </style>
+</head>
+<body>
+  <div class="controls">
+    <label>Upload CSV: <input type="file" id="csvFile" accept=".csv"></label><br><br>
+    <label>Nama Gunung: <input type="text" id="namaGunung" value="Inelika"></label><br><br>
+    <label>Tanggal Awal: <input type="date" id="startDate"></label>
+    <label>Tanggal Akhir: <input type="date" id="endDate"></label><br><br>
+    <label>Jumlah Maksimal Label X: <input type="number" id="maxLabelX" value="10" min="1"></label><br><br>
+    <button onclick="generateChart()">Tampilkan Grafik</button>
+    <button onclick="downloadCombined()">Download PNG Gabungan</button>
+  </div>
+
+  <div id="captureArea">
+    <div id="judulUtama"></div>
+    <div id="chartContainer"></div>
+  </div>
+
+  <div id="cr9x7">&copy; 2025 Fadlan Djamil – AkuData Observatory</div>
+
+  <script>
+    let charts = [];
+
+    function generateChart() {
+      const fileInput = document.getElementById('csvFile');
+      const gunung = document.getElementById('namaGunung').value;
+      const startDate = document.getElementById('startDate').value;
+      const endDate = document.getElementById('endDate').value;
+      const maxLabelX = parseInt(document.getElementById('maxLabelX').value) || 10;
+      const judulDiv = document.getElementById('judulUtama');
+      const container = document.getElementById('chartContainer');
+      container.innerHTML = '';
+      judulDiv.innerHTML = '';
+
+      if (!fileInput.files[0]) {
+        alert('Silakan upload file CSV terlebih dahulu!');
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const rawLines = e.target.result.split('\n');
+        const lines = rawLines.filter(line => line.trim() !== '');
+
+        // Cari delimiter otomatis
+        let delimiter = ',';
+        let maxColumns = 0;
+        [';', ','].forEach(d => {
+          const cols = lines[0].split(d).length;
+          if (cols > maxColumns) {
+            maxColumns = cols;
+            delimiter = d;
+          }
+        });
+
+        // Bersihkan header dari kutip ganda & spasi
+        const headers = lines[0].split(delimiter).map(h => h.trim().replace(/^["']|["']$/g, ''));
+
+        const dateKey = headers.find(h => /date|tanggal|category/i.test(h)) || headers[0];
+        const jenisGempa = headers.filter(h => h !== dateKey);
+
+        const data = lines.slice(1).map(line => {
+          const values = line.split(delimiter);
+          let row = {};
+          headers.forEach((h, i) => {
+            row[h] = values[i] ? values[i].replace(/['"]+/g, '').trim() : '0';
+          });
+          return row;
+        }).filter(d => d[dateKey]); // Hanya ambil data yang ada tanggalnya
+
+        if (data.length === 0) {
+          alert('Data tidak valid atau kosong dalam periode tersebut!');
+          return;
+        }
+
+        // Filter Tanggal Awal/Akhir
+        const filtered = data.filter(d => {
+          const date = new Date(d[dateKey]);
+          if (isNaN(date)) return false;
+          if (startDate && date < new Date(startDate)) return false;
+          if (endDate && date > new Date(endDate)) return false;
+          return true;
+        });
+
+        if (filtered.length === 0) {
+          alert('Tidak ada data dalam rentang tanggal tersebut!');
+          return;
+        }
+
+        const period = `${new Date(filtered[0][dateKey]).toLocaleDateString('id-ID')} s/d ${new Date(filtered[filtered.length - 1][dateKey]).toLocaleDateString('id-ID')}`;
+        judulDiv.innerHTML = `<h2>Grafik Jumlah Gempa Gunung ${gunung}</h2><h2>Periode: ${period}</h2>`;
+
+        charts = [];
+        jenisGempa.forEach((jenis, index) => {
+          const labels = filtered.map(d => d[dateKey]);
+          const values = filtered.map(d => Number(d[jenis]) || 0);
+          const maxVal = Math.max(...values);
+          const yMax = maxVal + 2;
+
+          const canvas = document.createElement('canvas');
+          canvas.id = 'chart_' + jenis;
+          canvas.height = 240;
+
+          const block = document.createElement('div');
+          block.className = 'chart-block';
+          block.appendChild(canvas);
+          container.appendChild(block);
+
+          const ctx = canvas.getContext('2d');
+          const chart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+              labels,
+              datasets: [{
+                label: jenis,
+                data: values,
+                backgroundColor: '#000000', // HITAM PEKAT
+                borderColor: '#000000',
+                borderWidth: 1,
+                categoryPercentage: 0.4,
+                barPercentage: 0.7
+              }]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              scales: {
+                x: {
+                  title: {
+                    display: index === jenisGempa.length - 1,
+                    text: 'Tanggal (dd/mm/yyyy)',
+                    font: { size: 16 }
+                  },
+                  display: index === jenisGempa.length - 1,
+                  ticks: {
+                    maxRotation: 90,
+                    minRotation: 90,
+                    autoSkip: true,
+                    maxTicksLimit: maxLabelX,
+                    font: { size: 16 }
+                  }
+                },
+                y: {
+                  beginAtZero: true,
+                  suggestedMax: yMax,
+                  ticks: {
+                    stepSize: 2,
+                    font: { size: 16 }
+                  }
+                }
+              },
+              plugins: {
+                legend: {
+                  display: true,
+                  position: 'top',
+                  labels: { font: { size: 18, weight: 'bold' } }
+                },
+                tooltip: {
+                  titleFont: { size: 16 },
+                  bodyFont: { size: 14 }
+                }
+              }
+            }
+          });
+
+          charts.push(chart);
+        });
+
+        // Auto Scroll to Chart
+        document.getElementById('chartContainer').scrollIntoView({ behavior: 'smooth' });
+      };
+
+      reader.readAsText(fileInput.files[0], 'utf-8');
+    }
+
+    function downloadCombined() {
+      const captureArea = document.getElementById('captureArea');
+      html2canvas(captureArea, { backgroundColor: '#ffffff', scale: 2 }).then(canvas => {
+        const link = document.createElement('a');
+        link.download = 'gabungan-grafik-gempa.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+      });
+    }
+  </script>
+</body>
+</html>
